@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from youtube_clickbait.analyzer import analyze_title_vs_transcript
-from youtube_clickbait.ollama_client import DEFAULT_MODEL, DEFAULT_OLLAMA_HOST
+from youtube_clickbait.ollama_client import DEFAULT_MODEL, DEFAULT_OLLAMA_HOST, normalize_ollama_base
 from youtube_clickbait.youtube_utils import (
     clip_transcript,
     extract_video_id,
@@ -59,7 +59,7 @@ def run_pipeline(
 
     clipped = clip_transcript(transcript, max_chars=max_transcript_chars)
 
-    host = (ollama_host or DEFAULT_OLLAMA_HOST).strip() or DEFAULT_OLLAMA_HOST
+    host = normalize_ollama_base((ollama_host or DEFAULT_OLLAMA_HOST).strip() or DEFAULT_OLLAMA_HOST)
     mdl = (model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
 
     try:

@@ -1,26 +1,35 @@
 """
-Desktop UI (Tkinter): no browser, no local web server — native window only.
-Requires Ollama running separately (same machine is fine).
+Desktop UI (Tkinter): native window, no browser.
+Ollama requests run one-at-a-time through a FIFO queue; a heartbeat shows when Ollama is reachable.
 """
 
 from __future__ import annotations
 
 import os
 import threading
+import time
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 
-from youtube_clickbait.ollama_client import DEFAULT_MODEL, DEFAULT_OLLAMA_HOST, ollama_list_models
-from youtube_clickbait.pipeline import markdown_to_plain, run_pipeline
+from youtube_clickbait.analysis_queue import AnalysisQueue, AnalyzeJob
+from youtube_clickbait.pipeline import markdown_to_plain
+from youtube_clickbait.ollama_client import (
+    DEFAULT_MODEL,
+    DEFAULT_OLLAMA_HOST,
+    merge_model_choices,
+    normalize_ollama_base,
+    ollama_list_models,
+    ollama_ping,
+)
 
 
 def main() -> None:
     root = tk.Tk()
     root.title("YouTube clickbait check")
-    root.minsize(560, 520)
-    root.geometry("720x600")
+    root.minsize(560, 560)
+    root.geometry("720x640")
 
-    host_default = os.environ.get("OLLAMA_HOST", DEFAULT_OLLAMA_HOST)
+    host_default = normalize_ollama_base(os.environ.get("OLLAMA_HOST", DEFAULT_OLLAMA_HOST))
     model_default = os.environ.get("OLLAMA_MODEL", DEFAULT_MODEL)
 
     pad = {"padx": 10, "pady": 4}
@@ -44,12 +53,18 @@ def main() -> None:
     host_entry.grid(row=r, column=1, sticky="ew", **pad)
     r += 1
 
+    ollama_led_var = tk.StringVar(value="Checking Ollama…")
+    ttk.Label(frm, text="Ollama status").grid(row=r, column=0, sticky="w", **pad)
+    ollama_lbl = ttk.Label(frm, textvariable=ollama_led_var, foreground="gray")
+    ollama_lbl.grid(row=r, column=1, sticky="w", **pad)
+    r += 1
+
     ttk.Label(frm, text="Model").grid(row=r, column=0, sticky="w", **pad)
     discovered = ollama_list_models(host_default)
-    model_choices = discovered if discovered else [model_default]
-    model_var = tk.StringVar(
-        value=model_default if model_default in model_choices else model_choices[0]
-    )
+    model_choices = merge_model_choices(discovered)
+    if model_default and model_default not in model_choices:
+        model_choices = [model_default] + model_choices
+    model_var = tk.StringVar(value=model_default)
     model_combo = ttk.Combobox(
         frm,
         textvariable=model_var,
@@ -77,75 +92,98 @@ def main() -> None:
     max_spin.grid(row=r, column=1, sticky="w", **pad)
     r += 1
 
-    btn = ttk.Button(frm, text="Analyze")
+    btn = ttk.Button(frm, text="Analyze (add to queue)")
     btn.grid(row=r, column=1, sticky="w", **pad)
     r += 1
 
     ttk.Label(frm, text="Status").grid(row=r, column=0, sticky="nw", **pad)
-    status_var = tk.StringVar(value="Paste a URL and click Analyze.")
+    status_var = tk.StringVar(value="Queue idle. Paste a URL and click Analyze.")
     status_lbl = ttk.Label(frm, textvariable=status_var, wraplength=520, justify="left")
     status_lbl.grid(row=r, column=1, sticky="ew", **pad)
     r += 1
 
     ttk.Label(frm, text="Result").grid(row=r, column=0, sticky="nw", **pad)
-    out = scrolledtext.ScrolledText(frm, height=18, wrap="word")
+    out = scrolledtext.ScrolledText(frm, height=16, wrap="word")
     out.grid(row=r, column=1, sticky="nsew", **pad)
     frm.rowconfigure(r, weight=1)
 
     hint = ttk.Label(
         frm,
-        text="Uses captions only. Ollama must be running (e.g. ollama serve).",
+        text=(
+            "Captions only. Requests are queued: one Ollama generation at a time. "
+            "Keep Ollama running; models include gpt-oss:20b (pull first). "
+            "URL may be http://127.0.0.1:11434 or 127.0.0.1:11434."
+        ),
         foreground="gray",
     )
     hint.grid(row=r + 1, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 8))
 
+    def set_status(msg: str) -> None:
+        status_var.set(msg)
+
+    def ui_status(msg: str) -> None:
+        root.after(0, lambda m=msg: set_status(m))
+
     def refresh_models() -> None:
-        h = host_var.get().strip() or host_default
-        names = ollama_list_models(h)
-        if names:
-            model_combo["values"] = names
-            if model_var.get() not in names:
-                model_var.set(names[0])
+        h = normalize_ollama_base(host_var.get().strip() or host_default)
+        names = merge_model_choices(ollama_list_models(h))
+        model_combo["values"] = names
+
+    def update_ollama_indicator() -> None:
+        h = normalize_ollama_base(host_var.get().strip() or host_default)
+        ok = ollama_ping(h)
+        if ok:
+            ollama_led_var.set(f"Reachable at {h}")
+            ollama_lbl.configure(foreground="green")
+        else:
+            ollama_led_var.set(f"Not reachable at {h} — start Ollama")
+            ollama_lbl.configure(foreground="darkred")
+
+    def heartbeat_loop() -> None:
+        while True:
+            root.after(0, update_ollama_indicator)
+            time.sleep(12.0)
+
+    threading.Thread(target=heartbeat_loop, daemon=True).start()
+
+    def append_result(job: AnalyzeJob, md: str, st: str) -> None:
+        out.insert(tk.END, f"\n{'=' * 60}\nJob #{job.seq}  {job.url}\n{'=' * 60}\n\n")
+        if md:
+            out.insert(tk.END, markdown_to_plain(md) + "\n")
+        elif st:
+            out.insert(tk.END, st + "\n")
+
+    def on_queue_result(job: AnalyzeJob, md: str, st: str, err: Exception | None) -> None:
+        def _ui() -> None:
+            if err is not None:
+                messagebox.showerror("Analyze error", str(err))
+                append_result(job, "", f"Error: {err}")
+                return
+            append_result(job, md, st)
+            if not md and st:
+                messagebox.showwarning("YouTube clickbait check", st)
+
+        root.after(0, _ui)
+
+    aq = AnalysisQueue(on_status=ui_status, on_result=on_queue_result)
 
     def on_analyze() -> None:
-        btn.configure(state="disabled")
-        status_var.set("Working…")
-        out.delete("1.0", tk.END)
-        root.update_idletasks()
-
-        def work() -> None:
-            try:
-                md, st = run_pipeline(
-                    url_var.get(),
-                    host_var.get().strip(),
-                    model_var.get().strip(),
-                    lang_var.get().strip(),
-                    int(max_var.get()),
-                )
-
-                def apply_ui() -> None:
-                    btn.configure(state="normal")
-                    status_var.set(st)
-                    if md:
-                        out.insert(tk.END, markdown_to_plain(md))
-                    elif st:
-                        messagebox.showwarning("YouTube clickbait check", st)
-
-                root.after(0, apply_ui)
-            except Exception as e:
-                def err() -> None:
-                    btn.configure(state="normal")
-                    status_var.set(f"Error: {e}")
-                    messagebox.showerror("Error", str(e))
-
-                root.after(0, err)
-
-        threading.Thread(target=work, daemon=True).start()
+        seq = aq.next_seq()
+        job = AnalyzeJob(
+            seq=seq,
+            url=url_var.get(),
+            ollama_host=normalize_ollama_base(host_var.get().strip() or host_default),
+            model=model_var.get().strip(),
+            caption_lang=lang_var.get().strip(),
+            max_transcript_chars=int(max_var.get()),
+        )
+        aq.submit(job)
 
     btn.configure(command=on_analyze)
     host_entry.bind("<FocusOut>", lambda _: refresh_models())
 
     url_entry.focus_set()
+    update_ollama_indicator()
     root.mainloop()
 
 

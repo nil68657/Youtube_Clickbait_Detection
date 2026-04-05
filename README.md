@@ -5,8 +5,14 @@ Desktop app (**Tkinter** + **Ollama**) that reads a video’s **captions**, summ
 ## Prerequisites
 
 1. Install [Ollama](https://ollama.com) and keep it running (default `http://127.0.0.1:11434`).
-2. Pull a model, for example: `ollama pull llama3.2`
+2. Pull at least one model, for example: `ollama pull llama3.2` or `ollama pull gpt-oss:20b` ([GPT-OSS on Ollama](https://ollama.com/library/gpt-oss)).
 3. Install [uv](https://docs.astral.sh/uv/).
+
+The window shows **Ollama status** (reachable or not) and refreshes every ~12 seconds. Analysis jobs go through a **FIFO queue**: only **one** Ollama generation runs at a time; the next job starts when the current response is finished. This avoids overlapping requests that often trigger “max retries exceeded” / connection errors.
+
+### If Ollama still cannot be reached
+
+Keep the Ollama app open (or `ollama serve`). Use **Ollama URL** `http://127.0.0.1:11434` or `127.0.0.1:11434`. Confirm in a terminal: `ollama list`. Pick a **model** you have pulled (`ollama pull <name>`).
 
 ## Setup
 
@@ -26,7 +32,7 @@ Or:
 uv run python app.py
 ```
 
-Paste a YouTube URL and click **Analyze**.
+Paste a YouTube URL and click **Analyze (add to queue)**. You can queue several URLs; they run in order.
 
 Videos **without captions** cannot be analyzed (this project does not download or transcribe audio).
 

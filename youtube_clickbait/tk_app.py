@@ -12,6 +12,7 @@ import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 
 from youtube_clickbait.analysis_queue import AnalysisQueue, AnalyzeJob
+from youtube_clickbait.ollama_launcher import cleanup_ollama_child, ensure_ollama_running
 from youtube_clickbait.pipeline import markdown_to_plain
 from youtube_clickbait.ollama_client import (
     DEFAULT_MODEL,
@@ -19,7 +20,7 @@ from youtube_clickbait.ollama_client import (
     merge_model_choices,
     normalize_ollama_base,
     ollama_list_models,
-    ollama_ping,
+    probe_ollama,
 )
 
 
@@ -31,6 +32,17 @@ def main() -> None:
 
     host_default = normalize_ollama_base(os.environ.get("OLLAMA_HOST", DEFAULT_OLLAMA_HOST))
     model_default = os.environ.get("OLLAMA_MODEL", DEFAULT_MODEL)
+
+    root.title("Starting Ollama…")
+    root.update_idletasks()
+    ok_ollama, ollama_start_msg, _ollama_proc = ensure_ollama_running(host_default)
+    root.title("YouTube clickbait check")
+    if not ok_ollama:
+        messagebox.showwarning(
+            "Ollama",
+            ollama_start_msg
+            + "\n\nStart the Ollama app manually if needed, then use Test connection.",
+        )
 
     pad = {"padx": 10, "pady": 4}
 
@@ -48,12 +60,42 @@ def main() -> None:
     r += 1
 
     ttk.Label(frm, text="Ollama URL").grid(row=r, column=0, sticky="w", **pad)
+    host_row = ttk.Frame(frm)
+    host_row.grid(row=r, column=1, sticky="ew", **pad)
+    host_row.columnconfigure(0, weight=1)
     host_var = tk.StringVar(value=host_default)
-    host_entry = ttk.Entry(frm, textvariable=host_var, width=48)
-    host_entry.grid(row=r, column=1, sticky="ew", **pad)
+    host_entry = ttk.Entry(host_row, textvariable=host_var, width=40)
+    host_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+
+    def test_ollama_connection() -> None:
+        def work() -> None:
+            h = normalize_ollama_base(host_var.get().strip() or host_default)
+            ok, working, msg = probe_ollama(h)
+
+            def ui() -> None:
+                if ok:
+                    if working != h:
+                        host_var.set(working)
+                    refresh_models()
+                    info = (
+                        msg
+                        if msg != "OK"
+                        else f"Ollama at {working} is responding."
+                    )
+                    messagebox.showinfo("Ollama", info)
+                else:
+                    messagebox.showerror("Ollama not reachable", msg)
+
+            root.after(0, ui)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    ttk.Button(host_row, text="Test connection", command=test_ollama_connection).grid(
+        row=0, column=1, sticky="e"
+    )
     r += 1
 
-    ollama_led_var = tk.StringVar(value="Checking Ollama…")
+    ollama_led_var = tk.StringVar(value="Checking Ollama...")
     ttk.Label(frm, text="Ollama status").grid(row=r, column=0, sticky="w", **pad)
     ollama_lbl = ttk.Label(frm, textvariable=ollama_led_var, foreground="gray")
     ollama_lbl.grid(row=r, column=1, sticky="w", **pad)
@@ -131,12 +173,15 @@ def main() -> None:
 
     def update_ollama_indicator() -> None:
         h = normalize_ollama_base(host_var.get().strip() or host_default)
-        ok = ollama_ping(h)
+        ok, working, _msg = probe_ollama(h)
         if ok:
-            ollama_led_var.set(f"Reachable at {h}")
+            if working != h:
+                ollama_led_var.set(f"Reachable at {working} (field shows {h} - click Test to apply)")
+            else:
+                ollama_led_var.set(f"Reachable at {working}")
             ollama_lbl.configure(foreground="green")
         else:
-            ollama_led_var.set(f"Not reachable at {h} — start Ollama")
+            ollama_led_var.set("Not reachable - start Ollama or click Test connection")
             ollama_lbl.configure(foreground="darkred")
 
     def heartbeat_loop() -> None:
@@ -168,6 +213,11 @@ def main() -> None:
     aq = AnalysisQueue(on_status=ui_status, on_result=on_queue_result)
 
     def on_analyze() -> None:
+        try:
+            max_chars = int(max_var.get())
+        except (ValueError, tk.TclError):
+            messagebox.showerror("Invalid value", "Max transcript chars must be a number.")
+            return
         seq = aq.next_seq()
         job = AnalyzeJob(
             seq=seq,
@@ -175,7 +225,7 @@ def main() -> None:
             ollama_host=normalize_ollama_base(host_var.get().strip() or host_default),
             model=model_var.get().strip(),
             caption_lang=lang_var.get().strip(),
-            max_transcript_chars=int(max_var.get()),
+            max_transcript_chars=max_chars,
         )
         aq.submit(job)
 
@@ -184,6 +234,12 @@ def main() -> None:
 
     url_entry.focus_set()
     update_ollama_indicator()
+
+    def on_close() -> None:
+        cleanup_ollama_child()
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
     root.mainloop()
 
 

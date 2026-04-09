@@ -47,7 +47,9 @@ class AnalysisQueue:
     def submit(self, job: AnalyzeJob) -> int:
         self._q.put(job)
         n = self._q.qsize()
-        self._on_status(f"Job #{job.seq} queued — {n} total in queue (one Ollama request at a time).")
+        self._on_status(
+            f"Job #{job.seq} queued - {n} total in queue (one Ollama request at a time)."
+        )
         return n
 
     def stop(self) -> None:
@@ -60,32 +62,36 @@ class AnalysisQueue:
             except queue.Empty:
                 continue
 
-            waiting = self._q.qsize()
-            if waiting:
-                self._on_status(
-                    f"Running job #{job.seq}… ({waiting} more in queue after this one.)"
-                )
-            else:
-                self._on_status(f"Running job #{job.seq}… (Ollama busy — next request starts when this finishes.)")
-
-            err: Exception | None = None
-            md, st = "", ""
             try:
-                md, st = run_pipeline(
-                    job.url,
-                    job.ollama_host,
-                    job.model,
-                    job.caption_lang,
-                    job.max_transcript_chars,
-                )
-            except Exception as e:
-                err = e
-            finally:
-                self._q.task_done()
+                waiting = self._q.qsize()
+                if waiting:
+                    self._on_status(
+                        f"Running job #{job.seq}... ({waiting} more in queue after this one.)"
+                    )
+                else:
+                    self._on_status(
+                        f"Running job #{job.seq}... (next request starts when this finishes.)"
+                    )
+
+                err: Exception | None = None
+                md, st = "", ""
+                try:
+                    md, st = run_pipeline(
+                        job.url,
+                        job.ollama_host,
+                        job.model,
+                        job.caption_lang,
+                        job.max_transcript_chars,
+                    )
+                except Exception as e:
+                    err = e
+
                 self._on_result(job, md, st, err)
 
-            rest = self._q.qsize()
-            if rest:
-                self._on_status(f"Finished #{job.seq}. {rest} job(s) left in queue.")
-            else:
-                self._on_status("Queue idle — ready for the next Analyze.")
+                rest = self._q.qsize()
+                if rest:
+                    self._on_status(f"Finished #{job.seq}. {rest} job(s) left in queue.")
+                else:
+                    self._on_status("Queue idle - ready for the next Analyze.")
+            finally:
+                self._q.task_done()

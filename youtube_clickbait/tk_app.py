@@ -21,6 +21,7 @@ from youtube_clickbait.ollama_client import (
     normalize_ollama_base,
     ollama_list_models,
     probe_ollama,
+    resolve_default_model,
 )
 
 
@@ -104,6 +105,7 @@ def main() -> None:
     ttk.Label(frm, text="Model").grid(row=r, column=0, sticky="w", **pad)
     discovered = ollama_list_models(host_default)
     model_choices = merge_model_choices(discovered)
+    model_default = resolve_default_model(model_default, discovered)
     if model_default and model_default not in model_choices:
         model_choices = [model_default] + model_choices
     model_var = tk.StringVar(value=model_default)
@@ -153,7 +155,7 @@ def main() -> None:
         frm,
         text=(
             "Captions only. Requests are queued: one Ollama generation at a time. "
-            "Keep Ollama running; models include gpt-oss:20b (pull first). "
+            "Keep Ollama running; pull models from ollama.com (e.g. gpt-oss, glm-4.7, llama3.3, qwen3). "
             "URL may be http://127.0.0.1:11434 or 127.0.0.1:11434."
         ),
         foreground="gray",

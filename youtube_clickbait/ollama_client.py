@@ -15,10 +15,39 @@ from urllib3.util.retry import Retry
 DEFAULT_OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
 
+# Names as on ollama.com/library; pull before use.
 MODEL_PRESETS: tuple[str, ...] = (
     "gpt-oss",
     "gpt-oss:20b",
     "gpt-oss:120b",
+    "gpt-oss:20b-cloud",
+    "gpt-oss:120b-cloud",
+    "glm-5.1",
+    "glm-5",
+    "glm-4.7",
+    "glm-4.7-flash",
+    "glm-4.6",
+    "glm4",
+    "glm4:9b",
+    "llama3.3",
+    "llama3.3:70b",
+    "deepseek-r1:8b",
+    "deepseek-r1:14b",
+    "deepseek-r1:32b",
+    "deepseek-r1:70b",
+    "deepseek-r1:671b",
+    "qwen3:8b",
+    "qwen3:30b",
+    "qwen3:32b",
+    "qwen3:235b",
+    "mistral-small:24b",
+    "mistral-small:22b",
+    "gemma4",
+    "gemma4:e4b",
+    "gemma4:26b",
+    "gemma4:31b",
+    "gemma3:12b",
+    "gemma3:27b",
     "llama3.2",
     "llama3.1",
     "mistral",
@@ -58,6 +87,25 @@ def merge_model_choices(discovered: list[str]) -> list[str]:
             seen.add(m)
             out.append(m)
     return out
+
+
+def resolve_default_model(preferred: str, discovered: list[str]) -> str:
+    """
+    Prefer an installed name Ollama accepts: exact match, tagged variant (e.g. llama3.2 -> llama3.2:1b),
+    else first installed model. If none installed, return preferred as-is.
+    """
+    p = (preferred or "").strip()
+    if not discovered:
+        return p
+    disc = sorted(set(discovered))
+    if p in disc:
+        return p
+    if p:
+        prefix = p + ":"
+        for name in disc:
+            if name.startswith(prefix):
+                return name
+    return disc[0]
 
 
 def _session() -> requests.Session:

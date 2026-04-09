@@ -99,7 +99,7 @@ def run_pipeline(
             + "\n```\n"
         )
 
-    status = f"OK — video {vid} · model {mdl}"
+    status = f"OK - video {vid} - model {mdl}"
     return md, status
 
 

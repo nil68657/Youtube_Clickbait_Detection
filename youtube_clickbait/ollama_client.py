@@ -6,7 +6,7 @@ import json
 import os
 import time
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -63,6 +63,8 @@ def merge_model_choices(discovered: list[str]) -> list[str]:
 def _session() -> requests.Session:
     """One urllib attempt per call; keep-alive reduces reconnect churn."""
     s = requests.Session()
+    # Proxies from HTTP_PROXY etc. often break localhost Ollama (shows as "not reachable").
+    s.trust_env = False
     adapter = HTTPAdapter(
         pool_connections=1,
         pool_maxsize=2,
@@ -106,14 +108,61 @@ def _request_with_retries(
 
 
 def ollama_ping(base_url: str = DEFAULT_OLLAMA_HOST) -> bool:
-    """Fast check: GET /api/tags returns 200."""
+    """Fast check: GET /api/tags returns 200 (tries localhost vs 127.0.0.1 if needed)."""
+    ok, _, _ = probe_ollama(base_url)
+    return ok
+
+
+def _alternate_loopback_bases(base: str) -> list[str]:
+    """Same port, swap 127.0.0.1 <-> localhost."""
+    p = urlparse(base)
+    scheme = p.scheme or "http"
+    host = (p.hostname or "").lower()
+    port = p.port or 11434
+    if host == "127.0.0.1":
+        return [normalize_ollama_base(f"{scheme}://localhost:{port}")]
+    if host == "localhost":
+        return [normalize_ollama_base(f"{scheme}://127.0.0.1:{port}")]
+    return []
+
+
+def probe_ollama(base_url: str) -> tuple[bool, str, str]:
+    """
+    Try to reach Ollama. Returns (success, working_base_url, message).
+
+    Tries the normalized URL, then the same port on the alternate loopback hostname.
+    """
     base = normalize_ollama_base(base_url)
-    url = urljoin(base + "/", "api/tags")
-    try:
-        r = _SESSION.get(url, timeout=PING_TIMEOUT_S)
-        return r.status_code == 200
-    except requests.RequestException:
-        return False
+    candidates: list[str] = [base]
+    for alt in _alternate_loopback_bases(base):
+        if alt not in candidates:
+            candidates.append(alt)
+
+    last_err = "connection refused or timeout"
+    for b in candidates:
+        u = urljoin(b + "/", "api/tags")
+        try:
+            r = _SESSION.get(u, timeout=PING_TIMEOUT_S)
+            if r.status_code == 200:
+                if b != base:
+                    return (
+                        True,
+                        b,
+                        f"Use this URL in the app: {b} (responds here; {base} did not).",
+                    )
+                return True, b, "OK"
+        except requests.RequestException as e:
+            last_err = str(e)
+
+    hint = (
+        f"Cannot reach Ollama ({last_err}). "
+        "Start the Ollama desktop app (or run `ollama serve`). "
+        "In a terminal, `ollama list` must succeed. "
+        "Try Ollama URL http://127.0.0.1:11434 or http://localhost:11434. "
+        "This app sets requests to ignore HTTP_PROXY for local Ollama. "
+        "Allow port 11434 in Windows Firewall for local connections."
+    )
+    return False, base, hint
 
 
 def ollama_chat(
